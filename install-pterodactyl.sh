@@ -141,9 +141,12 @@ if ! mariadb -e "SELECT 1" >/dev/null 2>&1; then
   exit 1
 fi
 
-mariadb -e "CREATE USER IF NOT EXISTS 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';" \
-  || mariadb -e "CREATE USER 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';"
+mariadb -e "CREATE USER IF NOT EXISTS 'pterodactyl'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+mariadb -e "CREATE USER IF NOT EXISTS 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';"
+mariadb -e "ALTER USER 'pterodactyl'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+mariadb -e "ALTER USER 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';"
 mariadb -e "CREATE DATABASE IF NOT EXISTS panel;"
+mariadb -e "GRANT ALL PRIVILEGES ON panel.* TO 'pterodactyl'@'localhost';"
 mariadb -e "GRANT ALL PRIVILEGES ON panel.* TO 'pterodactyl'@'127.0.0.1';"
 mariadb -e "FLUSH PRIVILEGES;"
 
