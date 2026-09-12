@@ -178,14 +178,27 @@ sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=${DB_PASS}|" .env
 chown -R pterodactyl:pterodactyl /var/www/pterodactyl
 
 echo "[6/9] Migrating database + creating admin user..."
-sudo -u pterodactyl php artisan migrate --seed --force
+sudo -u pterodactyl php artisan migrate --force
+SEEDED=$(mariadb -N -e "SELECT COUNT(*) FROM \`panel\`.eggs;" 2>/dev/null || echo 0)
+if [ "${SEEDED:-0}" = "0" ]; then
+  echo "[i] Seeding eggs (first run)..."
+  sudo -u pterodactyl php artisan db:seed --force
+else
+  echo "[i] Database already seeded, skipping."
+fi
 sudo -u pterodactyl php artisan storage:link --force
-sudo -u pterodactyl php artisan p:user:make \
-  --email="${ADMIN_EMAIL}" \
-  --username="${ADMIN_USER}" \
-  --password="${ADMIN_PASS}" \
-  --admin=1 --overwrite \
-  --no-interface
+USER_COUNT=$(mariadb -N -e "SELECT COUNT(*) FROM \`panel\`.users WHERE username='${ADMIN_USER}';" 2>/dev/null || echo 0)
+if [ "${USER_COUNT:-0}" = "0" ]; then
+  sudo -u pterodactyl php artisan p:user:make \
+    --email="${ADMIN_EMAIL}" \
+    --username="${ADMIN_USER}" \
+    --name-first="Administrator" \
+    --name-last="Account" \
+    --password="${ADMIN_PASS}" \
+    --admin=1
+else
+  echo "[i] Admin user already exists, keeping existing credentials."
+fi
 
 # ----------------------------------------------------------------- nginx
 echo "[7/9] Configuring nginx..."
