@@ -99,21 +99,46 @@ PHPVER=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')
 FPM_SOCK="/run/php/php${PHPVER}-fpm.sock"
 
 if ! command -v composer >/dev/null 2>&1; then
-  curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+  echo "[i] Installing Composer..."
+  curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer 2>/dev/null \
+    || apt install -y composer
 fi
 
 php -m | grep -qi openssl || { echo "[!] PHP OpenSSL extension missing."; exit 1; }
 
 # ------------------------------------------------------------------- db
 echo "[4/9] Setting up MariaDB..."
-svc start mariadb || true
+if [ "$SYSTEMD" = "1" ]; then
+  systemctl start mariadb 2>/dev/null || svc start mariadb || true
+else
+  echo "[i] No systemd -> starting mariadbd directly..."
+  mkdir -p /run/mysqld
+  chown mysql:mysql /run/mysqld 2>/dev/null || true
+  if [ -d /var/lib/mysql/mysql ]; then
+    echo "[i] MariaDB data dir already initialized."
+  else
+    echo "[i] Initializing MariaDB data dir..."
+    mariadb-install-db --user=mysql --datadir=/var/lib/mysql >/dev/null 2>&1 || true
+    chown -R mysql:mysql /var/lib/mysql 2>/dev/null || true
+  fi
+  if ! pgrep -x mariadbd >/dev/null && ! pgrep -x mysqld >/dev/null; then
+    nohup mariadbd --user=mysql >/var/log/mysql/error.log 2>&1 &
+    echo "[i] mariadbd launched (log: /var/log/mysql/error.log)"
+  fi
+fi
 svc start redis-server || true
 
-for i in $(seq 1 20); do
+for i in $(seq 1 30); do
   mariadb -e "SELECT 1" >/dev/null 2>&1 && break
-  echo "[i] waiting for MariaDB... ($i)"
+  echo "[i] waiting for MariaDB... ($i/30)"
   sleep 2
 done
+
+if ! mariadb -e "SELECT 1" >/dev/null 2>&1; then
+  echo "[!] MariaDB failed to start. Last log lines:"
+  tail -n 20 /var/log/mysql/error.log 2>/dev/null || true
+  exit 1
+fi
 
 mariadb -e "CREATE USER IF NOT EXISTS 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';" \
   || mariadb -e "CREATE USER 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';"
