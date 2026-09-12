@@ -164,6 +164,7 @@ fi
 sudo -u pterodactyl composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-req=php
 
 cp .env.example .env
+chown pterodactyl:pterodactyl .env
 sudo -u pterodactyl php artisan key:generate --force
 
 sed -i "s|^APP_URL=.*|APP_URL=http://${DOMAIN}|" .env
