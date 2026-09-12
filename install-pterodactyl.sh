@@ -122,7 +122,9 @@ else
     chown -R mysql:mysql /var/lib/mysql 2>/dev/null || true
   fi
   if ! pgrep -x mariadbd >/dev/null && ! pgrep -x mysqld >/dev/null; then
-    nohup mariadbd --user=mysql >/var/log/mysql/error.log 2>&1 &
+    mkdir -p /var/log/mysql
+    chown -R mysql:mysql /var/log/mysql 2>/dev/null || true
+    nohup mariadbd --user=mysql --log-error=/var/log/mysql/error.log >/dev/null 2>&1 &
     echo "[i] mariadbd launched (log: /var/log/mysql/error.log)"
   fi
 fi
