@@ -237,6 +237,10 @@ nginx -t
 svc enable nginx
 svc enable "php${PHPVER}-fpm"
 svc restart nginx
+
+# Run PHP-FPM as the pterodactyl user so Laravel can write to storage
+sed -i 's/^user = www-data/user = pterodactyl/' "/etc/php/${PHPVER}/fpm/pool.d/www.conf"
+sed -i 's/^group = www-data/group = pterodactyl/' "/etc/php/${PHPVER}/fpm/pool.d/www.conf"
 svc restart "php${PHPVER}-fpm"
 
 # ------------------------------------------------------------------ cron
