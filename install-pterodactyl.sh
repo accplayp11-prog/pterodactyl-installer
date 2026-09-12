@@ -1,8 +1,9 @@
 #!/bin/bash
 # =====================================================================
 # Pterodactyl Panel + Wings auto-installer
-# Target  : Ubuntu 22.04/24.04 OR Debian 12/13 (fresh VPS/VM)
-# Run     : curl -sSL <this-script-url> | sudo bash
+# Target  : Ubuntu 22.04/24.04 OR Debian 12/13
+#           Works with or without systemd (LXC/container friendly)
+# Run     : curl -sSL https://raw.githubusercontent.com/accplayp11-prog/pterodactyl-installer/main/install-pterodactyl.sh | sudo bash
 # =====================================================================
 
 set -e
@@ -11,20 +12,14 @@ export NEEDRESTART_MODE=a
 
 # ---------------------------------------------------------------- checks
 if [ "$(id -u)" -ne 0 ]; then
-  echo "[!] Run as root: sudo bash install-pterodactyl.sh"
+  echo "[!] Run as root."
   exit 1
 fi
 
 . /etc/os-release
 case "$ID" in
-  ubuntu)
-    OS_IS_UBUNTU=1
-    OS_IS_DEBIAN=0
-    ;;
-  debian)
-    OS_IS_UBUNTU=0
-    OS_IS_DEBIAN=1
-    ;;
+  ubuntu) ;;
+  debian) ;;
   *)
     echo "[!] This script only supports Ubuntu (22.04/24.04) or Debian (12/13)."
     echo "    Your OS ID = '$ID'"
@@ -32,13 +27,35 @@ case "$ID" in
     ;;
 esac
 
-DOMAIN=""
-read -rp "Enter your domain (or press Enter to use the server IP): " DOMAIN
-SERVER_IP=$(hostname -I | awk '{print $1}')
-
-if [ -z "$DOMAIN" ]; then
-  DOMAIN="$SERVER_IP"
+# systemd running or container without systemd?
+if [ "$(ps -p 1 -o comm= 2>/dev/null)" = "systemd" ]; then
+  SYSTEMD=1
+else
+  SYSTEMD=0
+  echo "[i] systemd not detected (PID1 = $(ps -p 1 -o comm= 2>/dev/null)). Using 'service' commands."
 fi
+
+svc() { # svc <start|stop|restart|enable|disable> <service>
+  local action=$1 name=$2
+  if [ "$action" = "enable" ]; then
+    if [ "$SYSTEMD" = "1" ]; then systemctl enable "$name"; else update-rc.d "$name" defaults; fi
+  elif [ "$action" = "disable" ]; then
+    if [ "$SYSTEMD" = "1" ]; then systemctl disable "$name"; else update-rc.d "$name" disable; fi
+  else
+    if [ "$SYSTEMD" = "1" ]; then systemctl "$action" "$name"; else service "$name" "$action"; fi
+  fi
+}
+
+# -------------------------------------------------------------- config
+if [ -t 0 ]; then
+  read -rp "Enter your domain (or press Enter to use the server IP): " DOMAIN
+else
+  echo "[i] Non-interactive run -> using server IP as domain."
+fi
+
+SERVER_IP=$(hostname -I | awk '{print $1}')
+[ -z "$DOMAIN" ] && DOMAIN="$SERVER_IP"
+[ -z "$SERVER_IP" ] && SERVER_IP="$DOMAIN"
 
 DB_PASS=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-20)
 ADMIN_EMAIL="admin@example.com"
@@ -63,19 +80,19 @@ apt upgrade -y
 echo "[2/9] Installing base packages..."
 apt install -y curl wget git nginx mariadb-server redis-server \
                certbot python3-certbot-nginx cron
-if [ "$OS_IS_UBUNTU" = "1" ]; then
+if [ "$ID" = "ubuntu" ]; then
   apt install -y software-properties-common
 fi
 
 # ------------------------------------------------------------------- php
 echo "[3/9] Installing PHP..."
-if [ "$OS_IS_UBUNTU" = "1" ]; then
+if [ "$ID" = "ubuntu" ]; then
   add-apt-repository -y ppa:ondrej/php
   apt update -y
   apt install -y php8.2 php8.2-{cli,common,gd,mysql,mbstring,bcmath,xml,fpm,curl,zip,redis,sqlite3,json,tokenizer}
 else
-  apt install -y php php-common php-cli php-gd php-mysql php-mbstring \
-                 php-bcmath php-xml php-fpm php-curl php-zip php-redis php-sqlite3
+  apt install -y php-cli php-common php-fpm php-gd php-mysql php-mbstring \
+                 php-bcmath php-xml php-curl php-zip php-redis php-sqlite3
 fi
 
 PHPVER=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')
@@ -89,22 +106,30 @@ php -m | grep -qi openssl || { echo "[!] PHP OpenSSL extension missing."; exit 1
 
 # ------------------------------------------------------------------- db
 echo "[4/9] Setting up MariaDB..."
-systemctl enable --now mariadb redis-server
+svc start mariadb || true
+svc start redis-server || true
 
-mariadb -e "CREATE USER 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';"
-mariadb -e "CREATE DATABASE panel;"
+for i in $(seq 1 20); do
+  mariadb -e "SELECT 1" >/dev/null 2>&1 && break
+  echo "[i] waiting for MariaDB... ($i)"
+  sleep 2
+done
+
+mariadb -e "CREATE USER IF NOT EXISTS 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';" \
+  || mariadb -e "CREATE USER 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';"
+mariadb -e "CREATE DATABASE IF NOT EXISTS panel;"
 mariadb -e "GRANT ALL PRIVILEGES ON panel.* TO 'pterodactyl'@'127.0.0.1';"
 mariadb -e "FLUSH PRIVILEGES;"
 
 # ----------------------------------------------------------------- panel
 echo "[5/9] Downloading Pterodactyl panel..."
-useradd -r -d /var/www/pterodactyl -s /bin/bash pterodactyl || true
+useradd -r -d /var/www/pterodactyl -s /bin/bash pterodactyl 2>/dev/null || true
 mkdir -p /var/www/pterodactyl
 chown pterodactyl:pterodactyl /var/www/pterodactyl
 
 cd /var/www/pterodactyl
 if [ -d ".git" ]; then
-  git pull origin v1.11.12 --force
+  echo "[i] Panel already cloned, keeping existing checkout."
 else
   sudo -u pterodactyl git clone -b v1.11.12 https://github.com/pterodactyl/panel.git .
 fi
@@ -128,11 +153,17 @@ sudo -u pterodactyl php artisan p:user:make \
   --email="${ADMIN_EMAIL}" \
   --username="${ADMIN_USER}" \
   --password="${ADMIN_PASS}" \
-  --admin=1 \
+  --admin=1 --overwrite \
   --no-interface
 
 # ----------------------------------------------------------------- nginx
 echo "[7/9] Configuring nginx..."
+if [ -d /etc/apache2 ]; then
+  echo "[i] Stopping/disabling apache2 (conflicts with nginx on port 80)..."
+  svc stop apache2 2>/dev/null || true
+  svc disable apache2 2>/dev/null || true
+fi
+
 cat > /etc/nginx/sites-available/pterodactyl.conf <<EOF
 server {
     listen 80;
@@ -159,11 +190,15 @@ EOF
 ln -sf /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/pterodactyl.conf
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
-systemctl enable nginx "php${PHPVER}-fpm"
-systemctl restart nginx "php${PHPVER}-fpm"
+svc enable nginx
+svc enable "php${PHPVER}-fpm"
+svc restart nginx
+svc restart "php${PHPVER}-fpm"
 
 # ------------------------------------------------------------------ cron
 echo "* * * * * php /var/www/pterodactyl/artisan schedule:run >> /dev/null 2>&1" | crontab -u pterodactyl -
+svc enable cron
+svc start cron || true
 
 # ------------------------------------------------------------- firewall
 echo "[8/9] Configuring firewall..."
@@ -177,15 +212,22 @@ fi
 
 # ----------------------------------------------------------------- wings
 echo "[9/9] Installing Docker + Wings..."
-curl -sSL https://get.docker.com/ | sh
-systemctl enable --now docker
+curl -sSL https://get.docker.com/ | sh || true
+
+if [ "$SYSTEMD" = "1" ]; then
+  systemctl enable --now docker 2>/dev/null || svc start docker
+else
+  svc enable docker 2>/dev/null || true
+  svc start docker 2>/dev/null || true
+fi
 
 mkdir -p /etc/pterodactyl
 curl -sL -o /usr/local/bin/wings \
   "https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_amd64"
 chmod +x /usr/local/bin/wings
 
-cat > /etc/systemd/system/wings.service <<'EOF'
+if [ "$SYSTEMD" = "1" ]; then
+  cat > /etc/systemd/system/wings.service <<'EOF'
 [Unit]
 Description=Pterodactyl Wings Daemon
 After=docker.service
@@ -204,9 +246,56 @@ StartLimitBurst=10
 [Install]
 WantedBy=multi-user.target
 EOF
+  systemctl daemon-reload
+  svc enable wings
+else
+  cat > /etc/init.d/wings <<'EOF'
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          wings
+# Required-Start:    $network $remote_fs
+# Required-Stop:     $network $remote_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Description:       Pterodactyl Wings Daemon
+### END INIT INFO
 
-systemctl daemon-reload
-systemctl enable wings
+DAEMON=/usr/local/bin/wings
+PIDFILE=/var/run/wings.pid
+
+case "$1" in
+  start)
+    start-stop-daemon --start --background --make-pidfile \
+      --pidfile "$PIDFILE" --exec "$DAEMON"
+    ;;
+  stop)
+    start-stop-daemon --stop --pidfile "$PIDFILE"
+    ;;
+  restart)
+    "$0" stop 2>/dev/null
+    "$0" start
+    ;;
+  status)
+    start-stop-daemon --status --pidfile "$PIDFILE"
+    exit $?
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|status}"
+    exit 1
+    ;;
+esac
+exit 0
+EOF
+  chmod +x /etc/init.d/wings
+  svc enable wings || true
+fi
+
+if ! pgrep -x dockerd >/dev/null; then
+  echo ""
+  echo "[!] WARNING: Docker daemon is not running."
+  echo "    If this is an unprivileged LXC/container, game servers cannot run."
+  echo "    You may need a privileged container or a real VM."
+fi
 
 # ----------------------------------------------------------------- done
 echo ""
@@ -220,10 +309,10 @@ echo " Admin email   : ${ADMIN_EMAIL}"
 echo " Admin pasword : ${ADMIN_PASS}"
 echo " DB password   : ${DB_PASS}"
 echo ""
-echo " Futures steps (in the panel browser UI):"
+echo " Future steps (in the panel browser UI):"
 echo "  1. Admin Panel -> Nodes -> Create New -> fill Schema Options"
 echo "  2. Click 'Generate' -> copy config.yml -> save to /etc/pterodactyl/config.yml"
-echo "  3. Run:  systemctl start wings"
+echo "  3. Start Wings:  service wings start   (or: systemctl start wings)"
 echo "  4. Nodes -> your node -> Allocations -> add game ports (e.g. 25565-25570)"
 echo "  5. Servers -> Create New -> pick game -> assign node/port -> deploy"
 echo ""
