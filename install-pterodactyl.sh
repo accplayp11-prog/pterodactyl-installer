@@ -100,8 +100,7 @@ FPM_SOCK="/run/php/php${PHPVER}-fpm.sock"
 
 if ! command -v composer >/dev/null 2>&1; then
   echo "[i] Installing Composer..."
-  curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer 2>/dev/null \
-    || apt install -y composer
+  apt install -y composer
 fi
 
 php -m | grep -qi openssl || { echo "[!] PHP OpenSSL extension missing."; exit 1; }
@@ -155,13 +154,14 @@ mkdir -p /var/www/pterodactyl
 chown pterodactyl:pterodactyl /var/www/pterodactyl
 
 cd /var/www/pterodactyl
-if [ -d ".git" ]; then
-  echo "[i] Panel already cloned, keeping existing checkout."
+if [ -f "artisan" ]; then
+  echo "[i] Panel already installed, keeping existing checkout."
 else
-  sudo -u pterodactyl git clone -b v1.11.12 https://github.com/pterodactyl/panel.git .
+  rm -rf .git 2>/dev/null || true
+  sudo -u pterodactyl git clone -b v1.15.1 https://github.com/pterodactyl/panel.git .
 fi
 
-sudo -u pterodactyl composer install --no-dev --optimize-autoloader --no-interaction
+sudo -u pterodactyl composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-req=php
 
 cp .env.example .env
 sudo -u pterodactyl php artisan key:generate --force
